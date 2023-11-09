@@ -4,14 +4,14 @@
 #include "LPC17xx_pinsel.h"
 #include "music.h"
 
-void confDAC();
+void configDAC();
 void confTimer();
 void confPin();
 
 int main(void) {
 
 	confPin();
-	confDAC();
+	configDAC();
 	confTimer();
     while(1) {
     }
@@ -33,7 +33,7 @@ void confPin(){
 	return;
 
 }
-void confDAC(){
+void configDAC(){
 
 	DAC_CONVERTER_CFG_Type confDac1;
 	confDac1.DBLBUF_ENA = 0;

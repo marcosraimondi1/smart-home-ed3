@@ -20,43 +20,81 @@
 #include "lpc17xx_gpio.h"
 #include "lpc17xx_exti.h"
 #include "lpc17xx_uart.h"
+#include "sirena1.h"
+#include "sirena2.h"
+
+#define PASSWORD_LEN 4
+#define DAC_TIMEOUT 1200
 
 //---------------------- GLOBAL VARIABLES ---------------------------------------------------
-uint8_t buffer_input[20] = {};
+
+// UART
+uint8_t buffer_input[1] = {0};
 uint8_t buffer_output[20] = {};
-uint8_t start_password = 0xAE;		 	// aviso de que los siguientes caracteres son el password
-uint8_t send= 0xEA;				 	// comparo los valores previos
-uint8_t change_password = 0xFF; 		// aviso de que los siguientes caracteres son el nuevo password
-uint8_t input_array[4] = {0};
-uint8_t password[4] = {1,2,3,4};
-uint8_t password_input[1] = {0};
-uint32_t resistanceVal = 200;
-uint8_t flag_alarma_on = 0;
+
+uint8_t password[PASSWORD_LEN] = {1, 2, 3, 4}; // password actual
+
+enum OPS
+{
+	LIGHTS_ON = 0xA1,
+	LIGHTS_OFF = 0xA2,
+	CHANGE_PASSWORD = 0xA3,
+	START_PASSWORD = 0xA4,
+	END_PASSWORD = 0xFF,
+	SEND_TIME = 0xA5,
+	VELOCIDAD_ALARMA = 0xA6
+};
+
+// ADC
+uint32_t resistanceVal = 150;
+
+// DMA
+uint32_t alarma_addr;
+GPDMA_LLI_Type linked_list_array[24];
+GPDMA_Channel_CFG_Type dma_config;
+
+// FLAGS
+uint8_t flags_uart[4] = {0}; // 1: change password, 2: start password, 3: velocidad alarma, 4: send time
+uint8_t flag_alarma_activada = 0;
 uint8_t flag_antirrebote = 0;
-uint8_t change_password_flag = 0;		// flag para saber si estoy ingresando un nuevo password
-uint8_t password_flag = 0; 			// flag para saber si estoy ingresando un password
 
 //---------------------- PROTOTYPES ---------------------------------------------------
 
-void timerMATConfig(LPC_TIM_TypeDef *timer, uint8_t prOption, uint32_t prValue, uint8_t mChannel, uint8_t inter, uint8_t stop, uint8_t reset, uint8_t extOutput, uint32_t value);
-void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode);
-uint8_t check_password(uint8_t password[], uint8_t input_array[]);
+/* CONFIG */
+void configDAC(uint32_t timeout);
+void configDMA();
 void configADC();
 void configPin();
 void configExtInt();
 void configTimer();
 void configUART();
+void timerMATConfig(LPC_TIM_TypeDef *timer, uint8_t prOption, uint32_t prValue, uint8_t mChannel, uint8_t inter, uint8_t stop, uint8_t reset, uint8_t extOutput, uint32_t value);
+void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode);
+
+/* SYSTEM */
+uint8_t check_password(uint8_t password[], uint8_t input_array[]);
 void parse_uart_input();
 void toggleAlarma();
-void sound_alarm();
+
+// sonido
+void sonar_alarma();
+void mutear_alarma();
+
+void enableInterrupts();
+//------------------------------------------------------------------------
 
 int main()
 {
+	alarma_addr = (uint32_t)alarma1; // alarma2
 	configPin();
 	configExtInt();
 	configTimer();
 	configADC();
 	configUART();
+	configDAC(DAC_TIMEOUT);
+	configDMA();
+
+	enableInterrupts();
 
 	while (1)
 	{
@@ -79,10 +117,10 @@ void TIMER1_IRQHandler()
 
 void EINT0_IRQHandler()
 {
-	if (flag_alarma_on && !flag_antirrebote)
+	if (flag_alarma_activada && !flag_antirrebote)
 	{
 		// sonar alarma
-		sound_alarm();
+		sonar_alarma();
 
 		// antirrebote
 		flag_antirrebote = 1;
@@ -95,31 +133,11 @@ void ADC_IRQHandler()
 {
 	uint32_t value = 0;
 	static uint8_t count = 0;
-	static uint16_t vals[5] = {0};
-	static uint16_t vals_1[5]={0};
+	static uint16_t vals_1[5] = {0};
 
 	if (ADC_ChannelGetStatus(LPC_ADC, 0, 1))
 	{
 		value = ADC_ChannelGetData(LPC_ADC, 0);
-
-		vals[count] = value;
-
-		if (count == 4)
-		{
-			// calcular promedio y mandar por uart
-			uint32_t prom = 0;
-			for (int i = 0; i < 5; i++)
-			{
-				prom += vals[i];
-			}
-			prom /= 5;
-			buffer_output[0] = prom;
-			UART_Send(LPC_UART2, buffer_output, sizeof(char), NONE_BLOCKING);
-		}
-		else
-		{
-			count++;
-		}
 
 		if (value > resistanceVal)
 		{
@@ -130,9 +148,9 @@ void ADC_IRQHandler()
 			GPIO_SetValue(2, 1 << 3);
 		}
 	}
-	else if(ADC_ChannelGetStatus(LPC_ADC,1,1)) //muestras de la temperatura
+	else if (ADC_ChannelGetStatus(LPC_ADC, 1, 1)) // muestras de la temperatura
 	{
-		value = ADC_ChannelGetData(LPC_ADC,1);
+		value = ADC_ChannelGetData(LPC_ADC, 1);
 		vals_1[count] = value;
 		if (count == 4)
 		{
@@ -145,15 +163,13 @@ void ADC_IRQHandler()
 			}
 			prom_1 /= 5;
 			// ver si mandamos por uart las muestras de temp
-			//buffer_output[0] = prom;
-			//UART_Send(LPC_UART2, buffer_output, sizeof(char), NONE_BLOCKING);
+			// buffer_output[0] = prom;
+			// UART_Send(LPC_UART2, buffer_output, sizeof(char), NONE_BLOCKING);
 		}
-
-
 	}
 }
 
-void UART2_IRQHandler(void)
+void UART2_IRQHandler()
 {
 	uint32_t intsrc, tmp, tmp1;
 
@@ -178,7 +194,7 @@ void UART2_IRQHandler(void)
 	if ((tmp == UART_IIR_INTID_RDA) || (tmp == UART_IIR_INTID_CTI))
 	{
 		UART_Receive(LPC_UART2, buffer_input, sizeof(char), NONE_BLOCKING);
-		UART_Send(LPC_UART2, buffer_input, sizeof(char), NONE_BLOCKING);
+		// UART_Send(LPC_UART2, buffer_input, sizeof(char), NONE_BLOCKING);
 
 		parse_uart_input();
 	}
@@ -195,92 +211,156 @@ void UART2_IRQHandler(void)
 
 void toggleAlarma()
 {
-	if (flag_alarma_on)
+	if (flag_alarma_activada)
 		GPIO_ClearValue(2, 1 << 2);
 	else
 		GPIO_SetValue(2, 1 << 2);
 
-	flag_alarma_on = ~flag_alarma_on & 1;
+	flag_alarma_activada = ~flag_alarma_activada & 1;
 }
+
 uint8_t check_password(uint8_t password[], uint8_t input_array[])
 {
-	// Calcula el tamaño del arreglo
-	uint8_t length = sizeof(password) / sizeof(password[0]);
-
 	// Compara los arreglos
-	for (int i = 0; i < length; i++)
-	{
+	for (int i = 0; i < PASSWORD_LEN; i++)
 		if (password[i] != input_array[i])
-		{
 			return 0;
-		}
-	}
 	return 1;
 }
 
 void parse_uart_input()
 {
-	STATIC uint8_t i = 0;
-// si estoy ingresando un password, guardo los siguientes valores en password_input
+	// verifico el estado de los flags
+	static uint8_t password_input[PASSWORD_LEN] = {0}; // entrada de usuario del password
 
-	// verifico cual es el input de uart
-	if (buffer_input[0] == start_password)
+	static int pass_index = 0;
+	static uint8_t password_vieja_correcta_flag = 0;
+
+	// verificar fin de trama de password
+	if (buffer_input[0] == END_PASSWORD)
 	{
-		password_flag = 1;
-	}
-	else if (buffer_input[0] == send)
-	{
-		// reinicio el contador
-		i=0;
-		//chequeo de flags
-		if(password_flag)
+		if (flags_uart[0])
 		{
-			password_flag=0;
-			if(check_password(password, password_input))
+			// cambiar password
+			if (password_vieja_correcta_flag)
+				for (int i = 0; i < PASSWORD_LEN; i++)
+					password[i] = password_input[i];
+
+			flags_uart[0] = 0;
+		}
+
+		if (flags_uart[1])
+		{
+			static int errores_consecutivos = 0;
+
+			// verificar password
+			if (check_password(password, password_input))
 			{
-				toggleAlarma();
+				toggleAlarma(); // LUCES
+				errores_consecutivos = 0;
+				mutear_alarma();
 			}
 			else
 			{
 				// error
-				// ver si hacemos algo
+				errores_consecutivos++;
+				if (errores_consecutivos > 3)
+				{
+					// sonar alarma
+					sonar_alarma();
+				}
 			}
-		}else if(change_password_flag)
-		{
-			change_password_flag=0;
-
+			flags_uart[1] = 0;
 		}
-	}else if(buffer_input[0]== change_password)
-	{
-		change_password_flag = 1;
 
+		pass_index = 0;
+		return;
 	}
 
-	if(password_flag)
+	if (flags_uart[0])
 	{
-		password_input[i] = buffer_input[0];
-		i++;
-	}else if(change_password_flag)
-	{
-		password[i] = buffer_input[0];
-		i++;
+		// cambiar pass
+		password_input[pass_index] = buffer_input[0];
+
+		pass_index = (pass_index + 1) % PASSWORD_LEN;
+
+		// tiene que ingresar primero el password actual y despues el nuevo
+		if (!password_vieja_correcta_flag && check_password(password_input, password))
+		{
+			// empiezo a cargar la nueva contrasena
+			pass_index = 0;
+			password_vieja_correcta_flag = 1;
+		}
+
+		return;
 	}
 
-	// parseo el input de uart
-	// uint8_t op = buffer_input[0];
-	// if (op == 1)
-	// {
-	// 	toggleAlarma();
-	// }
-	// if (op == 2)
-	// {
-	// 	// cambiar pass
-	// }
+	if (flags_uart[1])
+	{
+		// start password
+		password_input[pass_index] = buffer_input[0];
+		pass_index = (pass_index + 1) % PASSWORD_LEN;
+		return;
+	}
+
+	if (flags_uart[2])
+	{
+		// velocidad alarma DAC
+		configDAC(DAC_TIMEOUT - buffer_input[0] * 100);
+		flags_uart[2] = 0;
+		return;
+	}
+
+	if (flags_uart[3])
+	{
+		// send time de ADC
+		TIM_UpdateMatchValue(LPC_TIM0, 1, buffer_input[0] * 1000);
+		flags_uart[3] = 0;
+		return;
+	}
+
+	// si no estoy haciendo una operacion verifico que operacion inicia
+	switch (buffer_input[0])
+	{
+	case LIGHTS_ON:
+		// prender luz
+		GPIO_SetValue(0, 1 << 16);
+		break;
+	case LIGHTS_OFF:
+		// apagar luz
+		GPIO_ClearValue(0, 1 << 16);
+
+		break;
+	case CHANGE_PASSWORD:
+		// cambiar password
+		flags_uart[0] = 1;
+		break;
+	case START_PASSWORD:
+		// start password
+		flags_uart[1] = 1;
+		break;
+	case VELOCIDAD_ALARMA:
+		// velocidad alarma DAC
+		flags_uart[2] = 1;
+		break;
+	case SEND_TIME:
+		// send time de ADC
+		flags_uart[3] = 1;
+		break;
+	default:
+		// comando no reconocido
+		break;
+	}
 }
 
-void sound_alarm()
+void sonar_alarma()
 {
-	// config DMA
+	GPDMA_ChannelCmd(0, ENABLE); // suena la alarma
+}
+
+void mutear_alarma()
+{
+	GPDMA_ChannelCmd(0, DISABLE); // se apaga la alarma
 }
 
 /* ------------------------------------------
@@ -290,18 +370,24 @@ void sound_alarm()
  * ------------------------------------------
  */
 
-void configADC(void)
+void enableInterrupts()
+{
+	NVIC_SetPriority(ADC_IRQn, 30);
+	NVIC_SetPriority(EINT0_IRQn, 20);
+	NVIC_SetPriority(UART2_IRQn, 10);
+
+	NVIC_EnableIRQ(ADC_IRQn);
+	NVIC_EnableIRQ(EINT0_IRQn);
+	NVIC_EnableIRQ(UART2_IRQn);
+}
+
+void configADC()
 {
 	ADC_Init(LPC_ADC, 200000);
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // timer0 mat1
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, SET);
-	ADC_ChannelCmd(LPC_ADC, 1, ENABLE); // sensor de temperatura
 	ADC_ChannelCmd(LPC_ADC, 0, ENABLE);
-	NVIC_EnableIRQ(ADC_IRQn);
-	//
-	// habilitar 2do canal de adc para sensor de temperatura
-	//
 }
 
 void configTimer()
@@ -321,7 +407,6 @@ void configExtInt()
 	EXTI_Init();
 	EXTI_Config(&puerta);
 	EXTI_ClearEXTIFlag(0);
-	NVIC_EnableIRQ(EINT0_IRQn);
 }
 
 void configPin()
@@ -334,9 +419,6 @@ void configPin()
 	// sensor de luz, P0.23 adc
 	pinConfig(0, 23, 1, 0);
 
-	// sensor de temperatura, P0.24 adc
-	pinConfig(0,24,1,0);
-
 	// luz nocturna, P2.3 gpio output
 	pinConfig(2, 3, 0, 0);
 	GPIO_SetDir(2, 1 << 3, 1);
@@ -348,6 +430,14 @@ void configPin()
 	// UART2, Tx P0.10 y Rx P0.11
 	pinConfig(0, 10, 1, 0);
 	pinConfig(0, 11, 1, 0);
+
+	// LUZ INTERIOR, UART, P0.16
+	pinConfig(0, 16, 0, 0);
+	GPIO_SetDir(0, 1 << 16, 1);
+	GPIO_ClearValue(0, (1 << 16));
+
+	// DAC, P0.26
+	pinConfig(0, 26, 2, 0);
 }
 
 void configUART()
@@ -375,7 +465,51 @@ void configUART()
 	// Habilita el TX
 	UART_TxCmd(LPC_UART2, ENABLE);
 
-	NVIC_EnableIRQ(UART2_IRQn);
+	return;
+}
+
+void configDAC(uint32_t timeout)
+{
+
+	DAC_CONVERTER_CFG_Type confDac1;
+	confDac1.DBLBUF_ENA = 0;
+	confDac1.CNT_ENA = 1;
+	confDac1.DMA_ENA = 1;
+
+	DAC_ConfigDAConverterControl(LPC_DAC, &confDac1);
+	DAC_SetDMATimeOut(LPC_DAC, timeout);
+	DAC_Init(LPC_DAC);
+
+	return;
+}
+
+void configDMA()
+{
+
+	for (int i = 0; i < 24; i++)
+	{
+		linked_list_array[i].Control = 4095 | (1 << 18) // source width 16 bit
+									   | 1 << 22		// dest width = word 32 bits
+									   | 1 << 26;		// incremento automatico
+		linked_list_array[i].DstAddr = (uint32_t) & (LPC_DAC->DACR);
+		linked_list_array[i].SrcAddr = (uint32_t)(alarma1 + i * 4095);
+		linked_list_array[i].NextLLI = i == (24 - 1) ? (uint32_t)&linked_list_array[0] : (uint32_t)&linked_list_array[i + 1];
+	}
+
+	dma_config.ChannelNum = 0;
+	dma_config.TransferSize = 4095;
+	dma_config.TransferWidth = 0; // no se usa
+	dma_config.TransferType = GPDMA_TRANSFERTYPE_M2P;
+	dma_config.SrcConn = 0;
+	dma_config.DstConn = GPDMA_CONN_DAC;
+	dma_config.SrcMemAddr = (uint32_t)alarma1;
+	dma_config.DstMemAddr = 0;
+	dma_config.DMALLI = (uint32_t)&linked_list_array[0];
+
+	GPDMA_Init();
+
+	GPDMA_Setup(&dma_config);
+
 	return;
 }
 
@@ -433,4 +567,3 @@ void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode)
 	pinConfig.OpenDrain = 0;
 	PINSEL_ConfigPin(&pinConfig);
 }
-

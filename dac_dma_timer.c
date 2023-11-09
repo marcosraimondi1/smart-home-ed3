@@ -5,10 +5,10 @@
 #include "lpc17xx_gpdma.h"
 #include "music.h"
 
-void confDAC();
+void configDAC();
 void confTimer();
 void confPin();
-void confDMA();
+void configDMA();
 
 int n_lists = Mario8bits8k_raw_size / 4095; // 4095 max transfer size por LLI
 GPDMA_LLI_Type *linked_list;
@@ -18,8 +18,8 @@ int main(void) {
 	GPDMA_LLI_Type linked_list_array[n_lists];
 	linked_list = linked_list_array;
 	confPin();
-	confDAC();
-	confDMA();
+	configDAC();
+	configDMA();
 	//confTimer();
     while(1) {
     }
@@ -41,7 +41,7 @@ void confPin(){
 	return;
 
 }
-void confDAC(){
+void configDAC(){
 
 	DAC_CONVERTER_CFG_Type confDac1;
 	confDac1.DBLBUF_ENA = 1;
@@ -78,7 +78,7 @@ void confTimer(){
 	return;
 }
 
-void confDMA()
+void configDMA()
 {
 	GPDMA_LLI_Type lli0;
 	lli0.SrcAddr = (uint32_t)Mario8bits8k_raw;
