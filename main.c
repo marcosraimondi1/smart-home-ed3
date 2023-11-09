@@ -26,21 +26,21 @@ uint8_t buffer_input[20] = {};
 uint8_t buffer_output[20] = {};
 uint8_t start_password[]= 0xAE;		 	// aviso de que los siguientes caracteres son el password
 uint8_t send[]= 0xEA;				 	// comparo los valores previos
-bool password_flag = false; 			// flag para saber si estoy ingresando un password
 uint8_t change_password[]= 0xFF; 		// aviso de que los siguientes caracteres son el nuevo password
-bool change_password_flag = false;		// flag para saber si estoy ingresando un nuevo password
 uint8_t input_array[4] = {0};
 uint8_t password[4] = [1,2,3,4];
 uint8_t password_input[1] = {0};
 uint32_t resistanceVal = 200;
 uint8_t flag_alarma_on = 0;
 uint8_t flag_antirrebote = 0;
+bool change_password_flag = false;		// flag para saber si estoy ingresando un nuevo password
+bool password_flag = false; 			// flag para saber si estoy ingresando un password
 
 //---------------------- PROTOTYPES ---------------------------------------------------
 
 void timerMATConfig(LPC_TIM_TypeDef *timer, uint8_t prOption, uint32_t prValue, uint8_t mChannel, uint8_t inter, uint8_t stop, uint8_t reset, uint8_t extOutput, uint32_t value);
 void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode);
-boolean check_password(uint8_t password[], uint8_t input_array[]);
+bool check_password(uint8_t password[], uint8_t input_array[]);
 void configADC();
 void configPin();
 void configExtInt();
@@ -66,7 +66,7 @@ int main()
 
 /* ------------------------------------------
  * --                                      --
- * --           HANDLERS                   --
+ * --             HANDLERS                 --
  * --                                      --
  * ------------------------------------------
  */
@@ -96,6 +96,7 @@ void ADC_IRQHandler()
 	uint32_t value = 0;
 	static uint8_t count = 0;
 	static uint16_t vals[5] = {0};
+	static uint16_t vals_1[5]={0};
 
 	if (ADC_ChannelGetStatus(LPC_ADC, 0, 1))
 	{
@@ -105,7 +106,6 @@ void ADC_IRQHandler()
 
 		if (count == 4)
 		{
-			count = 0;
 			// calcular promedio y mandar por uart
 			uint32_t prom = 0;
 			for (int i = 0; i < 5; i++)
@@ -129,6 +129,27 @@ void ADC_IRQHandler()
 		{
 			GPIO_SetValue(2, 1 << 3);
 		}
+	}
+	else if(ADC_ChannelGetStatus(LPC_ADC,1,1)) //muestras de la temperatura
+	{
+		value = ADC_ChannelGetData(LPC_ADC,1);
+		vals_1[count] = value;
+		if (count == 4)
+		{
+			count = 0;
+			// calcular promedio y mandar por uart
+			uint32_t prom_1 = 0;
+			for (int i = 0; i < 5; i++)
+			{
+				prom_1 += vals_1[i];
+			}
+			prom_1 /= 5;
+			// ver si mandamos por uart las muestras de temp
+			//buffer_output[0] = prom;
+			//UART_Send(LPC_UART2, buffer_output, sizeof(char), NONE_BLOCKING);
+		}
+
+
 	}
 }
 
@@ -276,8 +297,12 @@ void configADC(void)
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // timer0 mat1
 	ADC_IntConfig(LPC_ADC, ADC_ADINTEN0, SET);
+	ADC_ChannelCmd(LPC_ADC, 1, ENABLE); // sensor de temperatura
 	ADC_ChannelCmd(LPC_ADC, 0, ENABLE);
 	NVIC_EnableIRQ(ADC_IRQn);
+	//
+	// habilitar 2do canal de adc para sensor de temperatura
+	//
 }
 
 void configTimer()
@@ -309,6 +334,9 @@ void configPin()
 
 	// sensor de luz, P0.23 adc
 	pinConfig(0, 23, 1, 0);
+
+	// sensor de temperatura, P0.24 adc
+	pintConfig(0,24,1,0);
 
 	// luz nocturna, P2.3 gpio output
 	pinConfig(2, 3, 0, 0);
