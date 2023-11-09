@@ -87,8 +87,7 @@ def listenPort():
             msg = pic.read(1)
             if msg:
                 valor = int.from_bytes(msg, "little")
-                temp = intATemperatura(valor * 4)
-                addMessage(str(valor) + " = " + str(round(temp, 2)) + " °C")
+                addMessage(str(valor))
 
     except Exception as e:
         print(e)

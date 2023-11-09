@@ -108,7 +108,7 @@ void confDMA()
 	dma_config.DstConn = GPDMA_CONN_DAC;
 	dma_config.SrcMemAddr = (uint32_t)Mario8bits8k_raw;
 	dma_config.DstMemAddr = 0;
-	dma_config.DMALLI = (uint32_t) linked_list;
+	dma_config.DMALLI = (uint32_t) &linked_list[0];
 
 	GPDMA_Init();
 
