@@ -24,23 +24,23 @@
 //---------------------- GLOBAL VARIABLES ---------------------------------------------------
 uint8_t buffer_input[20] = {};
 uint8_t buffer_output[20] = {};
-uint8_t start_password[]= 0xAE;		 	// aviso de que los siguientes caracteres son el password
-uint8_t send[]= 0xEA;				 	// comparo los valores previos
-uint8_t change_password[]= 0xFF; 		// aviso de que los siguientes caracteres son el nuevo password
+uint8_t start_password = 0xAE;		 	// aviso de que los siguientes caracteres son el password
+uint8_t send= 0xEA;				 	// comparo los valores previos
+uint8_t change_password = 0xFF; 		// aviso de que los siguientes caracteres son el nuevo password
 uint8_t input_array[4] = {0};
-uint8_t password[4] = [1,2,3,4];
+uint8_t password[4] = {1,2,3,4};
 uint8_t password_input[1] = {0};
 uint32_t resistanceVal = 200;
 uint8_t flag_alarma_on = 0;
 uint8_t flag_antirrebote = 0;
-bool change_password_flag = false;		// flag para saber si estoy ingresando un nuevo password
-bool password_flag = false; 			// flag para saber si estoy ingresando un password
+uint8_t change_password_flag = 0;		// flag para saber si estoy ingresando un nuevo password
+uint8_t password_flag = 0; 			// flag para saber si estoy ingresando un password
 
 //---------------------- PROTOTYPES ---------------------------------------------------
 
 void timerMATConfig(LPC_TIM_TypeDef *timer, uint8_t prOption, uint32_t prValue, uint8_t mChannel, uint8_t inter, uint8_t stop, uint8_t reset, uint8_t extOutput, uint32_t value);
 void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode);
-bool check_password(uint8_t password[], uint8_t input_array[]);
+uint8_t check_password(uint8_t password[], uint8_t input_array[]);
 void configADC();
 void configPin();
 void configExtInt();
@@ -156,8 +156,7 @@ void ADC_IRQHandler()
 void UART2_IRQHandler(void)
 {
 	uint32_t intsrc, tmp, tmp1;
-	static uint8_t i = 0;
-	
+
 	// Determina la fuente de interrupcion
 	intsrc = UART_GetIntId(LPC_UART2);
 	tmp = intsrc & UART_IIR_INTID_MASK;
@@ -174,7 +173,7 @@ void UART2_IRQHandler(void)
 			};
 		}
 	}
-	
+
 	// Receive Data Available or Character time-out
 	if ((tmp == UART_IIR_INTID_RDA) || (tmp == UART_IIR_INTID_CTI))
 	{
@@ -183,7 +182,7 @@ void UART2_IRQHandler(void)
 
 		parse_uart_input();
 	}
-	
+
 	return;
 }
 
@@ -203,40 +202,40 @@ void toggleAlarma()
 
 	flag_alarma_on = ~flag_alarma_on & 1;
 }
-bool check_password(uint8_t password[], uint8_t input_array[])
+uint8_t check_password(uint8_t password[], uint8_t input_array[])
 {
 	// Calcula el tamaño del arreglo
-	uint8_t length = sizeof(password) / sizeof(password[0]); 
+	uint8_t length = sizeof(password) / sizeof(password[0]);
 
 	// Compara los arreglos
 	for (int i = 0; i < length; i++)
 	{
 		if (password[i] != input_array[i])
 		{
-			return false;
+			return 0;
 		}
 	}
-	return true;
+	return 1;
 }
 
 void parse_uart_input()
 {
 	STATIC uint8_t i = 0;
 // si estoy ingresando un password, guardo los siguientes valores en password_input
-	
+
 	// verifico cual es el input de uart
-	if (buffer_input[0] == start_password[0])
+	if (buffer_input[0] == start_password)
 	{
-		password_flag = true;
+		password_flag = 1;
 	}
-	else if (buffer_input[0] == send[0])
+	else if (buffer_input[0] == send)
 	{
 		// reinicio el contador
-		i=0; 
+		i=0;
 		//chequeo de flags
 		if(password_flag)
 		{
-			password_flag=false;
+			password_flag=0;
 			if(check_password(password, password_input))
 			{
 				toggleAlarma();
@@ -248,12 +247,12 @@ void parse_uart_input()
 			}
 		}else if(change_password_flag)
 		{
-			change_password_flag=false;
-		
+			change_password_flag=0;
+
 		}
-	}else if(buffer_input[0]== change_password[0])
+	}else if(buffer_input[0]== change_password)
 	{
-		change_password_flag = true;
+		change_password_flag = 1;
 
 	}
 
@@ -336,7 +335,7 @@ void configPin()
 	pinConfig(0, 23, 1, 0);
 
 	// sensor de temperatura, P0.24 adc
-	pintConfig(0,24,1,0);
+	pinConfig(0,24,1,0);
 
 	// luz nocturna, P2.3 gpio output
 	pinConfig(2, 3, 0, 0);
