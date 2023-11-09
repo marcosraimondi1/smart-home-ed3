@@ -24,12 +24,11 @@
 //---------------------- GLOBAL VARIABLES ---------------------------------------------------
 uint8_t buffer_input[20] = {};
 uint8_t buffer_output[20] = {};
-uint8_t start_password[]= 0xAE; // aviso de que los siguientes caracteres son el password
-uint8_t send[]= 0xEA; // comparo los valores previos
- // flag para saber si estoy ingresando un password
-bool password_flag = false; // flag para saber si estoy ingresando un password
-uint8_t change_password[]= 0xFF; // aviso de que los siguientes caracteres son el nuevo password
-bool change_password_flag = false; // flag para saber si estoy ingresando un nuevo password
+uint8_t start_password[]= 0xAE;		 	// aviso de que los siguientes caracteres son el password
+uint8_t send[]= 0xEA;				 	// comparo los valores previos
+bool password_flag = false; 			// flag para saber si estoy ingresando un password
+uint8_t change_password[]= 0xFF; 		// aviso de que los siguientes caracteres son el nuevo password
+bool change_password_flag = false;		// flag para saber si estoy ingresando un nuevo password
 uint8_t input_array[4] = {0};
 uint8_t password[4] = [1,2,3,4];
 uint8_t password_input[1] = {0};
