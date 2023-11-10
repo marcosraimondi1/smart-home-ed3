@@ -1,10 +1,22 @@
 /*
 ===============================================================================
- Name        :
- Author      : $(author)
- Version     :
- Copyright   : $(copyright)
- Description : main definition
+ Name        : CONTROL DE ACCESO Y CONTROL DE LUZ CON UART
+ Author      : Mansilla Leonel, Palombarini Giuliano, Raimondi Marcos
+ Version     : Final
+ Description : programa de control de acceso y sensado de luz, con comunicacion 
+ UART se reciben comandos desde un modulo BLUETOOTH para:
+				- activar/desactivar una alarma
+				- cambiar el password
+				- cambiar la velocidad de la alarma
+				- cambiar el sonido de la alarma
+				- cambiar la velocidad de muestreo del ADC
+				- prender/apagar la luz interior
+A su vez se tiene un ADC que mide la luz ambiente y prende una luz exterior si 
+el nivel de luz es bajo. Este valor se envia por UART al modulo BLUETOOTH.
+Si la alarma esta activada y se abre la puerta (interrupcion externa), se activa 
+una alarma sonora utilizando DMA y DAC. Si se ingresa el password correcto, se 
+desactiva la alarma. 
+Si se ingresan 3 veces el password incorrecto, se activa la alarma sonora.
 ===============================================================================
 */
 
@@ -26,6 +38,13 @@
 #define PASSWORD_LEN 4
 #define DAC_TIMEOUT 1200
 
+#define SEMAFORO_SELECT_PIN 2
+#define SEMAFORO_SELECT_PORT 2
+#define LIGHTS_IN_PIN 16
+#define LIGHTS_IN_PORT 0
+#define LIGHTS_OUT_PIN 3
+#define LIGHTS_OUT_PORT 2
+
 //---------------------- GLOBAL VARIABLES ---------------------------------------------------
 
 // UART
@@ -42,29 +61,30 @@ enum OPS
 	START_PASSWORD = 0xA4,
 	END_PASSWORD = 0xFF,
 	SEND_TIME = 0xA5,
-	VELOCIDAD_ALARMA = 0xA6
+	VELOCIDAD_ALARMA = 0xA6,
+	CHANGE_ALARMA = 0xA7
 };
 
 // ADC
-uint32_t resistanceVal = 150;
+uint32_t ADC_LIMIT_VAL = 200;
 
 // DMA
-uint32_t alarma_addr;
 GPDMA_LLI_Type linked_list_array[24];
 GPDMA_Channel_CFG_Type dma_config;
 
 // FLAGS
+uint8_t flag_alarma2 = 0;
 uint8_t flags_uart[4] = {0}; // 1: change password, 2: start password, 3: velocidad alarma, 4: send time
 uint8_t flag_alarma_activada = 0;
 uint8_t flag_antirrebote = 0;
-
+uint8_t flag_alarma_sonando = 0;
 //---------------------- PROTOTYPES ---------------------------------------------------
 
 /* CONFIG */
 void configDAC(uint32_t timeout);
-void configDMA();
+void configDMA(const uint16_t alarma1[]);
 void configADC();
-void configPin();
+void configGPIO();
 void configExtInt();
 void configTimer();
 void configUART();
@@ -74,7 +94,7 @@ void pinConfig(uint8_t port, uint8_t pin, uint8_t func, uint8_t mode);
 /* SYSTEM */
 uint8_t check_password(uint8_t password[], uint8_t input_array[]);
 void parse_uart_input();
-void toggleAlarma();
+void toggleSemaforo();
 
 // sonido
 void sonar_alarma();
@@ -85,14 +105,13 @@ void enableInterrupts();
 
 int main()
 {
-	alarma_addr = (uint32_t)alarma1; // alarma2
-	configPin();
+	configGPIO();
 	configExtInt();
 	configTimer();
 	configADC();
 	configUART();
 	configDAC(DAC_TIMEOUT);
-	configDMA();
+	configDMA(alarma1);
 
 	enableInterrupts();
 
@@ -131,41 +150,20 @@ void EINT0_IRQHandler()
 
 void ADC_IRQHandler()
 {
-	uint32_t value = 0;
-	static uint8_t count = 0;
-	static uint16_t vals_1[5] = {0};
-
 	if (ADC_ChannelGetStatus(LPC_ADC, 0, 1))
 	{
-		value = ADC_ChannelGetData(LPC_ADC, 0);
+		uint32_t value = ADC_ChannelGetData(LPC_ADC, 0);
 
-		if (value > resistanceVal)
+		if (value > ADC_LIMIT_VAL)
 		{
-			GPIO_ClearValue(2, 1 << 3);
+			GPIO_ClearValue(LIGHTS_OUT_PORT, 1 << LIGHTS_OUT_PIN);
 		}
 		else
 		{
-			GPIO_SetValue(2, 1 << 3);
+			GPIO_SetValue(LIGHTS_OUT_PORT, 1 << LIGHTS_OUT_PIN);
 		}
-	}
-	else if (ADC_ChannelGetStatus(LPC_ADC, 1, 1)) // muestras de la temperatura
-	{
-		value = ADC_ChannelGetData(LPC_ADC, 1);
-		vals_1[count] = value;
-		if (count == 4)
-		{
-			count = 0;
-			// calcular promedio y mandar por uart
-			uint32_t prom_1 = 0;
-			for (int i = 0; i < 5; i++)
-			{
-				prom_1 += vals_1[i];
-			}
-			prom_1 /= 5;
-			// ver si mandamos por uart las muestras de temp
-			// buffer_output[0] = prom;
-			// UART_Send(LPC_UART2, buffer_output, sizeof(char), NONE_BLOCKING);
-		}
+		uint8_t out[1] = {value};
+		UART_Send(LPC_UART2, out, sizeof(out), NONE_BLOCKING);
 	}
 }
 
@@ -209,14 +207,14 @@ void UART2_IRQHandler()
  * ------------------------------------------
  */
 
-void toggleAlarma()
+void toggleSemaforo()
 {
-	if (flag_alarma_activada)
-		GPIO_ClearValue(2, 1 << 2);
-	else
-		GPIO_SetValue(2, 1 << 2);
-
 	flag_alarma_activada = ~flag_alarma_activada & 1;
+
+	if (flag_alarma_activada)
+		GPIO_SetValue(SEMAFORO_SELECT_PORT, 1 << SEMAFORO_SELECT_PIN);
+	else
+		GPIO_ClearValue(SEMAFORO_SELECT_PORT, 1 << SEMAFORO_SELECT_PIN);
 }
 
 uint8_t check_password(uint8_t password[], uint8_t input_array[])
@@ -256,7 +254,7 @@ void parse_uart_input()
 			// verificar password
 			if (check_password(password, password_input))
 			{
-				toggleAlarma(); // LUCES
+				toggleSemaforo(); // LUCES
 				errores_consecutivos = 0;
 				mutear_alarma();
 			}
@@ -268,6 +266,8 @@ void parse_uart_input()
 				{
 					// sonar alarma
 					sonar_alarma();
+					flag_alarma_activada = 0;
+					toggleSemaforo();
 				}
 			}
 			flags_uart[1] = 0;
@@ -285,10 +285,9 @@ void parse_uart_input()
 		pass_index = (pass_index + 1) % PASSWORD_LEN;
 
 		// tiene que ingresar primero el password actual y despues el nuevo
-		if (!password_vieja_correcta_flag && check_password(password_input, password))
+		if (pass_index == 0 && !password_vieja_correcta_flag && check_password(password_input, password))
 		{
 			// empiezo a cargar la nueva contrasena
-			pass_index = 0;
 			password_vieja_correcta_flag = 1;
 		}
 
@@ -314,7 +313,12 @@ void parse_uart_input()
 	if (flags_uart[3])
 	{
 		// send time de ADC
-		TIM_UpdateMatchValue(LPC_TIM0, 1, buffer_input[0] * 1000);
+		uint8_t val = buffer_input[0];
+		if (val < 1)
+			val = 1;
+		if (val > 10)
+			val = 10;
+		TIM_UpdateMatchValue(LPC_TIM0, 1, val * 500);
 		flags_uart[3] = 0;
 		return;
 	}
@@ -324,19 +328,20 @@ void parse_uart_input()
 	{
 	case LIGHTS_ON:
 		// prender luz
-		GPIO_SetValue(0, 1 << 16);
+		GPIO_SetValue(LIGHTS_IN_PORT, 1 << LIGHTS_IN_PIN);
 		break;
 	case LIGHTS_OFF:
 		// apagar luz
-		GPIO_ClearValue(0, 1 << 16);
-
+		GPIO_ClearValue(LIGHTS_IN_PORT, 1 << LIGHTS_IN_PIN);
 		break;
 	case CHANGE_PASSWORD:
 		// cambiar password
+		pass_index = 0;
 		flags_uart[0] = 1;
 		break;
 	case START_PASSWORD:
 		// start password
+		pass_index = 0;
 		flags_uart[1] = 1;
 		break;
 	case VELOCIDAD_ALARMA:
@@ -347,6 +352,18 @@ void parse_uart_input()
 		// send time de ADC
 		flags_uart[3] = 1;
 		break;
+	case CHANGE_ALARMA:
+		// change DMA alarm sound
+		if (flag_alarma2)
+			configDMA(alarma1);
+		else
+			configDMA(alarma2);
+
+		if (flag_alarma_sonando)
+			sonar_alarma();
+
+		flag_alarma2 = ~flag_alarma2;
+		break;
 	default:
 		// comando no reconocido
 		break;
@@ -356,11 +373,13 @@ void parse_uart_input()
 void sonar_alarma()
 {
 	GPDMA_ChannelCmd(0, ENABLE); // suena la alarma
+	flag_alarma_sonando = 1;
 }
 
 void mutear_alarma()
 {
 	GPDMA_ChannelCmd(0, DISABLE); // se apaga la alarma
+	flag_alarma_sonando = 0;
 }
 
 /* ------------------------------------------
@@ -385,6 +404,9 @@ void enableInterrupts()
 
 void configADC()
 {
+	// sensor de luz, P0.23 adc
+	pinConfig(0, 23, 1, 0);
+
 	ADC_Init(LPC_ADC, 200000);
 	ADC_EdgeStartConfig(LPC_ADC, ADC_START_ON_RISING);
 	ADC_StartCmd(LPC_ADC, ADC_START_ON_MAT01); // timer0 mat1
@@ -402,6 +424,9 @@ void configTimer()
 
 void configExtInt()
 {
+	// sensor puerta, P2.10 exti
+	pinConfig(2, 10, 1, PINSEL_PINMODE_PULLUP);
+
 	EXTI_InitTypeDef puerta;
 	puerta.EXTI_Line = EXTI_EINT0;
 	puerta.EXTI_Mode = EXTI_MODE_EDGE_SENSITIVE;
@@ -411,39 +436,29 @@ void configExtInt()
 	EXTI_ClearEXTIFlag(0);
 }
 
-void configPin()
+void configGPIO()
 {
-	// semaforo, P2.2 gpio output
-	pinConfig(2, 2, 0, 0);
-	GPIO_SetDir(2, 1 << 2, 1);
-	GPIO_ClearValue(2, (1 << 2));
-
-	// sensor de luz, P0.23 adc
-	pinConfig(0, 23, 1, 0);
+	// selector semaforo, P2.2 gpio output
+	pinConfig(SEMAFORO_SELECT_PORT, SEMAFORO_SELECT_PIN, 0, 0);
+	GPIO_SetDir(SEMAFORO_SELECT_PORT, 1 << SEMAFORO_SELECT_PIN, 1);
+	GPIO_ClearValue(SEMAFORO_SELECT_PORT, 1 << SEMAFORO_SELECT_PIN);
 
 	// luz nocturna, P2.3 gpio output
-	pinConfig(2, 3, 0, 0);
-	GPIO_SetDir(2, 1 << 3, 1);
-	GPIO_ClearValue(2, 1 << 3);
-
-	// sensor puerta, P2.10 exti
-	pinConfig(2, 10, 1, PINSEL_PINMODE_PULLUP);
-
-	// UART2, Tx P0.10 y Rx P0.11
-	pinConfig(0, 10, 1, 0);
-	pinConfig(0, 11, 1, 0);
+	pinConfig(LIGHTS_OUT_PORT, LIGHTS_OUT_PIN, 0, 0);
+	GPIO_SetDir(LIGHTS_OUT_PORT, 1 << LIGHTS_OUT_PIN, 1);
+	GPIO_ClearValue(LIGHTS_OUT_PORT, 1 << LIGHTS_OUT_PIN);
 
 	// LUZ INTERIOR, UART, P0.16
-	pinConfig(0, 16, 0, 0);
-	GPIO_SetDir(0, 1 << 16, 1);
-	GPIO_ClearValue(0, (1 << 16));
-
-	// DAC, P0.26
-	pinConfig(0, 26, 2, 0);
+	pinConfig(LIGHTS_IN_PORT, LIGHTS_IN_PIN, 0, 0);
+	GPIO_SetDir(LIGHTS_IN_PORT, 1 << LIGHTS_IN_PIN, 1);
+	GPIO_ClearValue(LIGHTS_IN_PORT, 1 << LIGHTS_IN_PIN);
 }
 
 void configUART()
 {
+	// UART2, Tx P0.10 y Rx P0.11
+	pinConfig(0, 10, 1, 0);
+	pinConfig(0, 11, 1, 0);
 
 	UART_CFG_Type UARTConfigStruct;
 	UART_FIFO_CFG_Type UARTFIFOConfigStruct;
@@ -472,6 +487,8 @@ void configUART()
 
 void configDAC(uint32_t timeout)
 {
+	// DAC, P0.26
+	pinConfig(0, 26, 2, 0);
 
 	DAC_CONVERTER_CFG_Type confDac1;
 	confDac1.DBLBUF_ENA = 0;
@@ -485,7 +502,7 @@ void configDAC(uint32_t timeout)
 	return;
 }
 
-void configDMA()
+void configDMA(const uint16_t alarma1[])
 {
 
 	for (int i = 0; i < 24; i++)
