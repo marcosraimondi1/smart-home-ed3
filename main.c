@@ -375,10 +375,12 @@ void enableInterrupts()
 	NVIC_SetPriority(ADC_IRQn, 30);
 	NVIC_SetPriority(EINT0_IRQn, 20);
 	NVIC_SetPriority(UART2_IRQn, 10);
+	NVIC_SetPriority(UART2_IRQn, 25);
 
 	NVIC_EnableIRQ(ADC_IRQn);
 	NVIC_EnableIRQ(EINT0_IRQn);
 	NVIC_EnableIRQ(UART2_IRQn);
+	NVIC_EnableIRQ(TIMER1_IRQn);
 }
 
 void configADC()
